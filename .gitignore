@@ -1,0 +1,4 @@
+circuit/circuit-backups/*
+circuit/circuit.kicad_prl
+circuit/circuit.kicad_sch-bak
+circuit/fp-info-cache

@@ -1,0 +1,251 @@
+#include "Psu.hpp"
+#include "TouchScreen_kbv.h"
+#include "Views.hpp"
+
+#include <MCUFRIEND_kbv.h>
+#include <Wire.h>
+
+#define TouchScreen TouchScreen_kbv
+#define TSPoint     TSPoint_kbv
+#define XP 8
+#define YP A3
+#define XM A2
+#define YM 9
+
+Psu psu_0 = Psu(0x5F);
+Psu psu_1 = Psu(0x5F);
+MCUFRIEND_kbv tft;
+TouchScreen ts(8, YP, XM, YM, 300);
+TSPoint tp;
+PsuView view_0 = PsuView(tft, 5, 30);
+PsuView view_1 = PsuView(tft, 168, 30);
+PsuDetailView detail_view = PsuDetailView(tft, 0, 25);
+ChangeableText voltage_text = ChangeableText(tft, 5, 112, 4, BLACK, WHITE);
+ChangeableText current_text = ChangeableText(tft, 168, 112, 4, BLACK, WHITE);
+ChangeableText power_text = ChangeableText(tft, 180, 175, 7, WHITE, GRAY);
+ChangeableText power_combined_text = ChangeableText(tft, 180, 175, 1, WHITE, GRAY);
+
+void setup()
+{
+  Wire.setTimeout(10);
+  Wire.begin();
+  Serial.begin(9600);
+  //while (!Serial);
+  tft.begin();
+  tft.setRotation(1);
+  tft.cp437(true);
+}
+
+// State machine variables
+enum State
+{
+  Init,
+  Overview,
+  Detail,
+  Settings
+};
+State state = State::Init;
+State last_state = State::Init;
+int8_t selected_psu;
+
+void display_loop()
+{
+  static uint32_t last_draw_time = 0;
+  uint32_t time = millis();
+  if(last_state == state)
+  {
+    if(time < last_draw_time)
+      last_draw_time = 0;
+    if(time - last_draw_time < 500)
+      return;
+  }
+  last_draw_time = time;
+
+  if(state == State::Init)
+  {
+    last_state = state;
+    tft.fillScreen(RED);
+    //tft.setCursor(10, 10);
+    //tft.setTextColor(WHITE);  
+    //tft.setTextSize(1);
+    //tft.print("Read PSU 1 information... ");
+    //psu_0.update_device_information();
+    //tft.print(psu_0.connected() ? psu_0.spn.c_str() : "FAILED");
+    //tft.setCursor(10, 20);
+    //tft.print("Read PSU 2 information.");
+    //psu_1.update_device_information();
+    //tft.print(psu_1.connected() ? psu_1.spn.c_str() : "FAILED");
+    tft.fillScreen(WHITE);
+    state = State::Overview;
+  }
+
+  if(state == State::Overview)
+  {
+    if(last_state != state)
+    {
+      last_state = state;
+      draw_banner(tft, "UBERSICHT");
+      tft.fillRect(0, 25, tft.width(), tft.height(), WHITE);
+      tft.fillRect(tft.width() / 2 - 1, 25, 3, 70, GRAY);
+      tft.fillRect(0, 95, tft.width(), 3, GRAY);
+      tft.fillRect(0, 155, tft.width(), 100, GRAY);
+      Serial.println("Main layout drawn");
+      view_0.set_state(PsuState::error);
+      view_1.set_state(PsuState::error);
+    }
+
+    float combined_voltage = 0;
+    float combined_current = 0;
+    float combined_power = 0;
+    float combined_power_used = 0;
+    for(int i = 0; i <= 1; i++)
+    {
+      PsuView * view = &view_0;
+      Psu * psu = &psu_0;
+      if(i == 1)
+      {
+        view = &view_1;
+        psu = &psu_1;
+      }
+      if(psu->connected())
+      {
+        combined_voltage += psu->voltage_out();
+        combined_current += psu->current_out();
+        combined_power += psu->power_in();
+        combined_power_used += psu->power_consumed();
+        view->set_state(PsuState::normal);
+        view->initial_draw();
+        view->update_draw(format_precision(psu->voltage_out(), 2), 
+                          format_precision(psu->current_out(), 1),
+                          format_precision(psu->temperature_internal(), 1),
+                          format_precision(psu->power_in(), 0));
+      }
+      else
+      {
+        view->set_state(PsuState::error);
+        view->initial_draw();
+      }
+    }
+
+    voltage_text.set_text(format_precision(combined_voltage, 2) + "V");
+    current_text.set_text(format_precision(combined_current / 2, 1) + "A");
+    int16_t x1, y1;
+    uint16_t w, h;
+    std::string text = format_precision(combined_power, 0) + "W";
+    tft.setTextSize(7);
+    tft.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
+    power_text.set_text(text, (tft.width() - w) / 2, 175);
+
+    text = format_precision(combined_power_used / 1000, 2) + "kWh";
+    tft.setTextSize(1);
+    tft.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
+    power_combined_text.set_text(text, (tft.width() - w - 5), 230);
+  }
+
+  if(state == State::Detail)
+  {
+    if(last_state != state)
+    {
+      last_state = state;
+      if(selected_psu == 0)
+        draw_banner(tft, "DETAILS PSU 1");
+      if(selected_psu == 1)
+        draw_banner(tft, "DETAILS PSU 2");
+    }
+    detail_view.initial_draw();
+    Psu * psu = &psu_0;
+    if(selected_psu == 1)
+      psu = &psu_1;
+    if(psu->voltage_in() > 0)
+      detail_view.update_draw(format_precision(psu->voltage_in(), 2), 
+                              format_precision(psu->voltage_out(), 2),
+                              format_precision(psu->current_in(), 1),
+                              format_precision(psu->current_out(), 1),
+                              format_precision(psu->power_in(), 0),
+                              format_precision(psu->power_out(), 0),
+                              format_precision(psu->temperature_intake(), 1),
+                              format_precision(psu->temperature_internal(), 1),
+                              format_precision(psu->fan_speed(), 0),
+                              format_precision(psu->seconds_since_startup(), 0),
+                              format_precision(psu->power_consumed(), 0));
+  }
+}
+
+void touch_loop()
+{
+  auto p = ts.getPoint();
+  //restore shared pins
+  pinMode(YP, OUTPUT);      
+  pinMode(XM, OUTPUT);
+  digitalWrite(YP, HIGH);
+  digitalWrite(XM, HIGH);
+  if(p.z < 10) return;
+  auto x = map(p.y, 913, 165, 0, tft.width());
+  auto y = map(p.x, 172, 846, 0, tft.height());
+  Serial.print("Touch on: ");
+  Serial.print(x);
+  Serial.print("x");
+  Serial.println(y);
+  if(state == State::Init)
+  {
+    //No touch operation
+  }
+
+  if(state == State::Overview)
+  {
+    if(x > 0 && x < 150 &&
+       y > 30 && y < 80)
+       {
+          selected_psu = 0;
+          state = State::Detail;
+          detail_view.invalidate();
+          display_loop();
+       }
+    if(x > 210 && x < 300 &&
+       y > 30 && y < 80)
+       {
+          selected_psu = 1;
+          state = State::Detail;
+          detail_view.invalidate();
+          display_loop();
+       }
+  }
+
+  if(state == State::Detail)
+  {
+    if(y > 0 && y < 40)
+       {
+          selected_psu = -1;
+          state = State::Overview;
+          current_text.set_text("");
+          voltage_text.set_text("");
+          power_text.set_text("");
+          power_combined_text.set_text("");
+          view_0.invalidate();
+          view_1.invalidate(); 
+          display_loop();
+       }
+  }
+}
+
+void loop()
+{
+  uint32_t start = millis();
+
+  if(psu_0.connected() && psu_1.connected())
+  {
+    // Enable signal
+  }
+  else
+  {
+    // Disable signal
+  }
+
+  display_loop();
+  touch_loop();
+
+  uint32_t end = millis();
+  //Serial.print("Main loop ms:");
+  //Serial.println(std::to_string(end - start).c_str());
+  delay(5);
+}
