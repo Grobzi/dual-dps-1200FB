@@ -6,9 +6,12 @@ This project demonstrates how to use two HP DPS-1200FB server PSUs in series to 
 ## Features
 - Monitoring of PSU parameters: current, power draw, temperature and many more.
 - Touchscreen user interface (2.8" Arduino-compatible display)
-- Control of 12V output in case of failure (WIP)
+- Control of 12V output in case of failure
+- Basic statistics (consumed power per hour)
 
-![picture](doc/user_interface_1.jpg)
+<img src="doc/user_interface_overview.jpg" width="250">
+<img src="doc/user_interface_details.jpg" width="250">
+<img src="doc/user_interface_statistics.jpg" width="250">
 
 ## Folder Structure
 - `circuit/` - KiCad project files for the custom PCB (WIP)

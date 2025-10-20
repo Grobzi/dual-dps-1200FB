@@ -4,6 +4,7 @@
 
 #include <MCUFRIEND_kbv.h>
 #include <Wire.h>
+#include <vector>
 
 #define TouchScreen TouchScreen_kbv
 #define TSPoint TSPoint_kbv
@@ -25,6 +26,7 @@ ChangeableText voltage_text = ChangeableText(tft, 5, 112, 4, BLACK, WHITE);
 ChangeableText current_text = ChangeableText(tft, 168, 112, 4, BLACK, WHITE);
 ChangeableText power_text = ChangeableText(tft, 180, 175, 7, WHITE, GRAY);
 ChangeableText power_combined_text = ChangeableText(tft, 180, 175, 1, WHITE, GRAY);
+std::vector<uint32_t> consumption_per_hour = {0};
 
 void setup()
 {
@@ -44,6 +46,7 @@ enum State
     Init,
     Overview,
     Detail,
+    Statistics,
     Settings
 };
 State state = State::Init;
@@ -99,8 +102,12 @@ void display_loop()
             tft.fillRect(0, 95, tft.width(), 3, GRAY);
             tft.fillRect(0, 155, tft.width(), 100, GRAY);
             Serial.println("Main layout drawn");
-            view_0.set_state(PsuState::error);
-            view_1.set_state(PsuState::error);
+            current_text.set_text("");
+            voltage_text.set_text("");
+            power_text.set_text("");
+            power_combined_text.set_text("");
+            view_0.invalidate();
+            view_1.invalidate();
         }
 
         float combined_voltage = 0;
@@ -174,6 +181,76 @@ void display_loop()
                 format_precision(psu->fan_speed(), 0), format_precision(psu->seconds_since_startup(), 0),
                 format_precision(psu->power_consumed(), 0));
     }
+
+    if (state == State::Statistics)
+    {
+        constexpr int graph_width = 260;
+        constexpr int graph_height = 150;
+        constexpr int bars_count = 5;
+        constexpr int bars_width = graph_width / bars_count;
+        constexpr int x_pos = 40;
+
+        static auto last_hour = 0;
+        if (last_state != state || last_hour != consumption_per_hour.size())
+        {
+            last_hour = consumption_per_hour.size();
+            last_state = state;
+            draw_banner(tft, "STATISTIC");
+            tft.fillRect(0, 25, tft.width(), tft.height(), WHITE);
+            tft.fillRect(x_pos - 3, 200, graph_width + 3, 3, GRAY);
+            tft.fillRect(x_pos - 3, 200, 3, -graph_height, GRAY);
+            tft.setTextColor(BLACK);
+            tft.setCursor(x_pos + 20, 210);
+            tft.print("0");
+            tft.setCursor(258, 210);
+            tft.print("-5");
+            tft.setCursor(3, 37);
+            tft.print("2.4");
+            tft.setTextSize(1);
+            tft.setCursor(13, 52);
+            tft.print("kw/h");
+            for (int i = 0; i < bars_count; i++)
+            {
+                if (i >= consumption_per_hour.size())
+                    break;
+                // Maximum should be 2400Wh
+                auto consumption = consumption_per_hour[consumption_per_hour.size() - i - 1];
+                auto bar_height = (consumption / 2400.f) * graph_height;
+                tft.fillRect(x_pos + bars_width * i, 200, bars_width, -bar_height, GRAY);
+            }
+        }
+
+        static uint32_t flicker = 0;
+        flicker++;
+        auto consumption = consumption_per_hour.back();
+        auto bar_height = (consumption / 2400.f) * graph_height;
+        bar_height = std::max(1.f, bar_height);
+        if (flicker % 2)
+            tft.fillRect(x_pos, 200, bars_width, -bar_height, GRAY);
+        else
+            tft.fillRect(x_pos, 200, bars_width, -bar_height, RED);
+    }
+}
+
+void collect_statistics_loop()
+{
+    static uint32_t last_time = 0;
+    uint32_t time = millis();
+    if (time < last_time)
+        last_time = 0;
+    if (time - last_time < 1000 * 30)
+        return;
+    last_time = time;
+
+    auto hour = millis() / 1000 / 60 / 60;
+    if (hour >= consumption_per_hour.size())
+        consumption_per_hour.push_back(0);
+    auto consumed = psu_0.power_consumed() + psu_1.power_consumed();
+    for (int i = 0; i < hour; i++)
+        consumed -= consumption_per_hour[i];
+    Serial.print("Refresh statistics for hour ");
+    Serial.println(hour);
+    consumption_per_hour[hour] = consumed;
 }
 
 void touch_loop()
@@ -184,14 +261,16 @@ void touch_loop()
     pinMode(XM, OUTPUT);
     digitalWrite(YP, HIGH);
     digitalWrite(XM, HIGH);
-    if (p.z < 10)
+    if (p.z < 100)
         return;
     auto x = map(p.y, 913, 165, 0, tft.width());
     auto y = map(p.x, 172, 846, 0, tft.height());
     Serial.print("Touch on: ");
     Serial.print(x);
     Serial.print("x");
-    Serial.println(y);
+    Serial.print(y);
+    Serial.print("|");
+    Serial.println(p.z);
     if (state == State::Init)
     {
         // No touch operation
@@ -205,10 +284,15 @@ void touch_loop()
             state = State::Detail;
             display_loop();
         }
-        if (x > 210 && x < 300 && y > 30 && y < 80)
+        else if (x > 210 && x < 300 && y > 30 && y < 80)
         {
             selected_psu = 1;
             state = State::Detail;
+            display_loop();
+        }
+        else if (y > 180)
+        {
+            state = State::Statistics;
             display_loop();
         }
     }
@@ -219,12 +303,14 @@ void touch_loop()
         {
             selected_psu = -1;
             state = State::Overview;
-            current_text.set_text("");
-            voltage_text.set_text("");
-            power_text.set_text("");
-            power_combined_text.set_text("");
-            view_0.invalidate();
-            view_1.invalidate();
+            display_loop();
+        }
+    }
+    if (state == State::Statistics)
+    {
+        if (y > 0 && y < 40)
+        {
+            state = State::Overview;
             display_loop();
         }
     }
@@ -271,6 +357,7 @@ void loop()
     enable_signal_loop();
     display_loop();
     touch_loop();
+    collect_statistics_loop();
 
     uint32_t end = millis();
     // Serial.print("Main loop ms:");
